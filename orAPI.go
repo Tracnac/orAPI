@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,15 +14,19 @@ import (
 
 func process(w http.ResponseWriter, req *http.Request) {
 
+	if req.URL.Path == "/" || req.URL.Path == "/favicon.ico" {
+		return
+	}
+
 	t, err := template.ParseFiles("templates" + req.URL.Path + ".sql")
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(w, "%s\n", err.Error())
 		return
 	}
 
 	u, err := url.Parse(req.RequestURI)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(w, "%s\n", err.Error())
 		return
 	}
 
@@ -32,7 +35,7 @@ func process(w http.ResponseWriter, req *http.Request) {
 	var buf bytes.Buffer
 	err = t.Execute(&buf, values)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(w, "%s\n", err.Error())
 		return
 	}
 
@@ -43,32 +46,39 @@ func process(w http.ResponseWriter, req *http.Request) {
 
 func main() {
 	http.HandleFunc("/", process)
-	http.ListenAndServe(":8090", nil)
+	err := http.ListenAndServe("0.0.0.0:8090", nil)
+	if err != nil {
+		fmt.Fprint(os.Stderr, err.Error())
+		os.Exit(1)
+	}
 	os.Exit(0)
 }
 
 func oraConnect(query string) string {
 	DBConStr := "oracle://tracnac:tracnac@192.168.122.90:1521/XEPDB1"
 	DB, err := go_ora.NewConnection(DBConStr)
-	checkErrExit("Driver error: ", err)
+	if err != nil {
+		return err.Error()
+	}
 	err = DB.Open()
-	checkErrExit("Open connection error: ", err)
+	if err != nil {
+		return err.Error()
+	}
 	defer func() {
-		err = DB.Close()
-		checkErrExit("Connection close error: ", err)
+		_ = DB.Close()
 	}()
 
 	stmt := go_ora.NewStmt(query, DB)
 	defer func() {
-		err = stmt.Close()
-		checkErrExit("Statement close error: ", err)
+		_ = stmt.Close()
 	}()
 
 	rows, err := stmt.Query_(nil)
-	checkErrExit("Query error: ", err)
+	if err != nil {
+		return err.Error()
+	}
 	defer func() {
-		err = rows.Close()
-		checkErrExit("Cursor close error: ", err)
+		_ = rows.Close()
 	}()
 
 	var tmp string
@@ -85,8 +95,7 @@ func oraConnect(query string) string {
 			tmp += "  {"
 		}
 		for k, v := range rows.CurrentRow {
-			str, err := json.Marshal(v)
-			checkErrExit("(robot) Marshall Error", err)
+			str, _ := json.Marshal(v)
 			if k < _len {
 				tmp += fmt.Sprintf("\"%s\": %v, ", rows.Columns()[k], string(str))
 			} else {
@@ -99,12 +108,14 @@ func oraConnect(query string) string {
 	} else {
 		tmp += "}\n]\n"
 	}
-	return tmp
+	return jsonPrettyPrint(tmp)
 }
 
-func checkErrExit(msg string, err error) {
+func jsonPrettyPrint(in string) string {
+	var out bytes.Buffer
+	err := json.Indent(&out, []byte(in), "", "  ")
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, msg, err)
-		os.Exit(1)
+		return in
 	}
+	return out.String()
 }
